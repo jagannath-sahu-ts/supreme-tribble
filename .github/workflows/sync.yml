@@ -7,16 +7,16 @@ on:
 jobs:
   sync-pr-merge:
     if: github.event.pull_request.merged == true
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
 
     env:
       GHEC_REPO: git@github.com:thoughtspot/"${{ github.event.repository.name }}".git
 
     steps:
-      - name: Set up Git user
-        run: |
-          git config --global user.name "ghes-svc-account"
-          git config --global user.email "ghes-svc-account@thoughtspot.com"
+#       - name: Set up Git user
+#         run: |
+#           git config --global user.name "ghes-svc-account"
+#           git config --global user.email "ghes-svc-account@thoughtspot.com"
 
       - name: Set up SSH access to GitHub.com
         run: |
