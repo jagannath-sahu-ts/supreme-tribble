@@ -45,7 +45,7 @@ jobs:
 
       - name: Add GitHub.com as remote
         run: |
-          git remote add public $GH_COM_REPO
+          git remote add public $GHEC_REPO
           git fetch public ${TARGET_BRANCH} || echo "Target branch does not exist on GitHub.com (will be created)"
 
       - name: Check for conflicts on destination
