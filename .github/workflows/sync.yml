@@ -1,0 +1,66 @@
+name: Sync Merged PR to GitHub.com
+
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  sync-pr-merge:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+
+    env:
+      GH_COM_REPO: github.com/thoughtspot/"${{ github.event.repository.name }}"
+
+    steps:
+      - name: Set up Git user
+        run: |
+          git config --global user.name "ghes-sync-svc-acc"
+          git config --global user.email "ghes-sync-svc-acc@thoughtspot.com"
+
+      - name: Clone source (GHE internal)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          token: ${{ secrets.GHE_PAT }}
+
+      - name: Get base branch name
+        run: |
+          echo "TARGET_BRANCH=${{ github.event.pull_request.base.ref }}" >> $GITHUB_ENV
+          echo "PR_NUMBER=${{ github.event.pull_request.number }}" >> $GITHUB_ENV
+
+      - name: Create squashed commit
+        run: |
+          BASE=$(git merge-base origin/${TARGET_BRANCH} HEAD)
+          git reset $BASE
+          git add .
+          git commit -m "Sync ${TARGET_BRANCH} from internal (PR #${PR_NUMBER})"
+
+      - name: Add GitHub.com as remote
+        run: |
+          git remote add public https://x-access-token:${{ secrets.GITHUB_COM_TOKEN }}@${{ env.GH_COM_REPO }}
+          git fetch public ${TARGET_BRANCH} || echo "Target branch does not exist on GitHub.com (will be created)"
+
+      - name: Detect divergence with GitHub.com
+        run: |
+          DEST_HEAD=$(git rev-parse public/${TARGET_BRANCH} || echo "none")
+          if [ "$DEST_HEAD" != "none" ]; then
+            if git merge-base --is-ancestor $DEST_HEAD HEAD; then
+              echo "Destination is behind or in sync — safe to push."
+            else
+              echo "Conflict: Destination branch has unrelated commits. Aborting sync."
+              exit 1
+            fi
+          else
+            echo "Branch doesn't exist on GitHub.com. Safe to push."
+          fi
+
+      - name: Backup destination branch (if exists)
+        run: |
+          if git show-ref --verify --quiet refs/remotes/public/${TARGET_BRANCH}; then
+            git push public public/${TARGET_BRANCH}:refs/heads/backup-before-sync-${TARGET_BRANCH}-$(date +%Y%m%d%H%M%S)
+          fi
+
+      - name: Force push to GitHub.com
+        run: |
+          git push --force public HEAD:${TARGET_BRANCH}
