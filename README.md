@@ -1,7 +1,5 @@
 # supreme-tribble
 
-# supreme-tribble
-
 # Artificial Intelligence: A Comprehensive Overview from a Software Engineering Perspective
 
 **(Generated: 2025-04-16)**
