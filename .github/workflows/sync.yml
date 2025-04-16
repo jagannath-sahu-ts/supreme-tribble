@@ -1,4 +1,4 @@
-name: Sync Merged PR to GitHub.com
+name: Sync Merged PR to GitHub.com (via SSH)
 
 on:
   pull_request:
@@ -10,26 +10,33 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      GH_COM_REPO: github.com/thoughtspot/"${{ github.event.repository.name }}"
+      GHEC_REPO: git@github.com:thoughtspot/"${{ github.event.repository.name }}".git
 
     steps:
       - name: Set up Git user
         run: |
-          git config --global user.name "ghes-sync-svc-acc"
-          git config --global user.email "ghes-sync-svc-acc@thoughtspot.com"
+          git config --global user.name "ghes-svc-account"
+          git config --global user.email "ghes-svc-account@thoughtspot.com"
 
-      - name: Clone source (GHE internal)
+      - name: Set up SSH access to GitHub.com
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.GHEC_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+          git config --global url."git@github.com:".insteadOf "https://github.com/"
+
+      - name: Checkout source repo (internal GHE)
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.base.ref }}
-          token: ${{ secrets.GHE_PAT }}
 
-      - name: Get base branch name
+      - name: Set env variables
         run: |
           echo "TARGET_BRANCH=${{ github.event.pull_request.base.ref }}" >> $GITHUB_ENV
           echo "PR_NUMBER=${{ github.event.pull_request.number }}" >> $GITHUB_ENV
 
-      - name: Create squashed commit
+      - name: Create squashed commit from merged PR
         run: |
           BASE=$(git merge-base origin/${TARGET_BRANCH} HEAD)
           git reset $BASE
@@ -38,29 +45,29 @@ jobs:
 
       - name: Add GitHub.com as remote
         run: |
-          git remote add public https://x-access-token:${{ secrets.GITHUB_COM_TOKEN }}@${{ env.GH_COM_REPO }}
+          git remote add public $GH_COM_REPO
           git fetch public ${TARGET_BRANCH} || echo "Target branch does not exist on GitHub.com (will be created)"
 
-      - name: Detect divergence with GitHub.com
+      - name: Check for conflicts on destination
         run: |
-          DEST_HEAD=$(git rev-parse public/${TARGET_BRANCH} || echo "none")
+          DEST_HEAD=$(git rev-parse public/${TARGET_BRANCH} 2>/dev/null || echo "none")
           if [ "$DEST_HEAD" != "none" ]; then
             if git merge-base --is-ancestor $DEST_HEAD HEAD; then
-              echo "Destination is behind or in sync — safe to push."
+              echo "No conflict. Safe to sync."
             else
-              echo "Conflict: Destination branch has unrelated commits. Aborting sync."
+              echo "Conflict detected. Aborting sync."
               exit 1
             fi
           else
-            echo "Branch doesn't exist on GitHub.com. Safe to push."
+            echo "Destination branch doesn't exist. Will create it."
           fi
 
-      - name: Backup destination branch (if exists)
+      - name: Backup GitHub.com branch (if exists)
         run: |
           if git show-ref --verify --quiet refs/remotes/public/${TARGET_BRANCH}; then
             git push public public/${TARGET_BRANCH}:refs/heads/backup-before-sync-${TARGET_BRANCH}-$(date +%Y%m%d%H%M%S)
           fi
 
-      - name: Force push to GitHub.com
+      - name: Force push squashed commit to GitHub.com
         run: |
           git push --force public HEAD:${TARGET_BRANCH}
