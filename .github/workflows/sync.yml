@@ -24,7 +24,7 @@ jobs:
           echo "${{ secrets.GHEC_SSH_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan github.com >> ~/.ssh/known_hosts
-          git config --global url."git@github.com:".insteadOf "https://github.com/"
+          git config url."git@github.com:".insteadOf "https://github.com/"
 
       - name: Checkout source repo (internal GHE)
         uses: actions/checkout@v4
