@@ -10,13 +10,13 @@ jobs:
     runs-on: self-hosted
 
     env:
-      GHEC_REPO: git@github.com:thoughtspot/"${{ github.event.repository.name }}".git
+      GHEC_REPO: git@github.com:thoughtspot/${{ github.event.repository.name }}.git
 
     steps:
 #       - name: Set up Git user
 #         run: |
-#           git config --global user.name "ghes-svc-account"
-#           git config --global user.email "ghes-svc-account@thoughtspot.com"
+#           git config --global user.name "jagannath-sahu-ts"
+#           git config --global user.email "jagannath.sahu@thoughtspot.com"
 
       - name: Set up SSH access to GitHub.com
         run: |
@@ -24,7 +24,6 @@ jobs:
           echo "${{ secrets.GHEC_SSH_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan github.com >> ~/.ssh/known_hosts
-          git config url."git@github.com:".insteadOf "https://github.com/"
 
       - name: Checkout source repo (internal GHE)
         uses: actions/checkout@v4
@@ -38,6 +37,9 @@ jobs:
 
       - name: Create squashed commit from merged PR
         run: |
+          git config user.name "jagannath-sahu-ts"
+          git config user.email "jagannath.sahu@thoughtspot.com"
+          git config url."git@github.com:".insteadOf "https://github.com/"
           BASE=$(git merge-base origin/${TARGET_BRANCH} HEAD)
           git reset $BASE
           git add .
