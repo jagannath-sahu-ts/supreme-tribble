@@ -130,8 +130,14 @@ jobs:
 
       - name: Add GitHub.com as remote
         run: |
-          echo "Adding GitHub.com as remote 'public'..."
-          git remote add public $GHEC_REPO
+          echo "Checking if remote 'public' already exists..."
+          if git remote | grep -q "^public$"; then
+            echo "Remote 'public' already exists. Updating URL..."
+            git remote set-url public $GHEC_REPO
+          else
+            echo "Adding GitHub.com as remote 'public'..."
+            git remote add public $GHEC_REPO
+          fi
           
           echo "Fetching from public remote..."
           git fetch public ${TARGET_BRANCH} || echo "Target branch does not exist on GitHub.com (will be created)"
