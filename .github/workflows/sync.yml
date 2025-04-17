@@ -148,19 +148,21 @@ jobs:
             if git merge-base --is-ancestor $DEST_HEAD HEAD; then
               echo "No conflict detected. Safe to sync."
               echo "conflict_detected=false" >> $GITHUB_OUTPUT
+              echo "action=direct_push" >> $GITHUB_OUTPUT
             else
-              echo "WARNING: Conflict detected. Aborting sync to prevent data loss."
+              echo "Potential conflict detected. Will create a PR instead of direct push."
               echo "conflict_detected=true" >> $GITHUB_OUTPUT
-              exit 1
+              echo "action=create_pr" >> $GITHUB_OUTPUT
             fi
           else
             echo "Destination branch doesn't exist. Will create it."
             echo "conflict_detected=false" >> $GITHUB_OUTPUT
+            echo "action=direct_push" >> $GITHUB_OUTPUT
           fi
         continue-on-error: false
 
       - name: Backup GitHub.com branch (if exists)
-        if: steps.conflict_check.outputs.conflict_detected == 'false'
+        if: steps.conflict_check.outputs.action == 'direct_push'
         run: |
           echo "Creating backup of existing branch (if any)..."
           if git show-ref --verify --quiet refs/remotes/public/${TARGET_BRANCH}; then
@@ -173,7 +175,7 @@ jobs:
         continue-on-error: true
 
       - name: Force push squashed commit to GitHub.com
-        if: steps.conflict_check.outputs.conflict_detected == 'false'
+        if: steps.conflict_check.outputs.action == 'direct_push'
         run: |
           echo "Pushing squashed commit to GitHub.com..."
           if ! git push --force public HEAD:${TARGET_BRANCH}; then
@@ -183,8 +185,40 @@ jobs:
           echo "Successfully pushed to ${TARGET_BRANCH} on public repository"
         continue-on-error: false
 
-      - name: Post sync status
-        if: steps.conflict_check.outputs.conflict_detected == 'false'
+      - name: Create PR branch for conflict resolution
+        if: steps.conflict_check.outputs.action == 'create_pr'
+        run: |
+          echo "Creating PR branch for conflict resolution..."
+          PR_BRANCH="sync-pr-${PR_NUMBER}-to-${TARGET_BRANCH}-${TIMESTAMP}"
+          echo "PR_BRANCH=${PR_BRANCH}" >> $GITHUB_ENV
+          
+          # Push current commit to a new branch on public repo
+          git push public HEAD:${PR_BRANCH}
+          echo "Successfully pushed to ${PR_BRANCH} on public repository"
+        continue-on-error: false
+
+      - name: Create PR on GitHub.com
+        if: steps.conflict_check.outputs.action == 'create_pr'
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const result = await github.rest.pulls.create({
+              owner: 'thoughtspot',
+              repo: context.payload.repository.name.replace('internal-', ''),
+              title: `Sync ${process.env.TARGET_BRANCH} from internal (PR #${process.env.PR_NUMBER})`,
+              body: `This PR was automatically created to sync changes from internal PR #${process.env.PR_NUMBER} to the public repository.\n\nAutomatic sync detected potential conflicts, so manual review is required.`,
+              head: process.env.PR_BRANCH,
+              base: process.env.TARGET_BRANCH
+            });
+            console.log(`PR created: ${result.data.html_url}`);
+            
+            // Add the PR URL to the environment for use in the next step
+            process.env.PR_URL = result.data.html_url;
+        continue-on-error: false
+
+      - name: Post sync status - Direct Push
+        if: steps.conflict_check.outputs.action == 'direct_push'
         uses: actions/github-script@v6
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -197,8 +231,8 @@ jobs:
             })
         continue-on-error: true
 
-      - name: Notify if sync failed due to conflicts
-        if: failure() && steps.conflict_check.outputs.conflict_detected == 'true'
+      - name: Post sync status - PR Created
+        if: steps.conflict_check.outputs.action == 'create_pr'
         uses: actions/github-script@v6
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -207,6 +241,20 @@ jobs:
               issue_number: context.payload.pull_request.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: '❌ Failed to sync changes to the public repository due to potential conflicts. Manual intervention required.'
+              body: '⚠️ Potential conflicts detected when syncing to the public repository.\n\nA pull request has been created for manual resolution: ${process.env.PR_URL}'
+            })
+        continue-on-error: true
+
+      - name: Notify if sync failed
+        if: failure()
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.payload.pull_request.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '❌ Failed to sync changes to the public repository. Check the workflow logs for details.'
             })
         continue-on-error: true
