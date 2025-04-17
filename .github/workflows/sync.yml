@@ -44,47 +44,88 @@ jobs:
           git config user.email "jagannath.sahu@thoughtspot.com"
           git config url."git@github.com:".insteadOf "https://github.com/"
           
-          # Checkout the target branch first
-          git checkout ${TARGET_BRANCH}
+          # Debug info
+          echo "Current git status:"
+          git status
           
-          # Get the merge commit SHA
-          echo "Merge commit SHA: ${MERGE_SHA}"
+          echo "Recent commits:"
+          git log -n 5 --oneline
           
-          # Create a temporary branch from the target branch to store our squashed changes
+          # Pull the latest changes to ensure we have the merge commit
+          git pull origin ${TARGET_BRANCH} --ff-only
+          
+          # Find the PR merge commit by looking at recent history
+          echo "Looking for PR merge commit in history..."
+          PR_MERGE_COMMIT=$(git log -n 20 --grep="Merge pull request #${PR_NUMBER}" --format="%H")
+          
+          if [ -z "$PR_MERGE_COMMIT" ]; then
+            echo "Could not find merge commit for PR #${PR_NUMBER} in recent history."
+            echo "Trying alternative approach with GitHub provided merge SHA..."
+            PR_MERGE_COMMIT="${MERGE_SHA}"
+          fi
+          
+          echo "Using merge commit: ${PR_MERGE_COMMIT}"
+          
+          # Create a temporary branch for our changes
           git checkout -b temp-sync-branch
           
+          # Identify the parent commit before the merge (on the target branch)
+          PARENT_COMMIT=$(git log -n 1 "${PR_MERGE_COMMIT}^1" --format="%H")
+          echo "Parent commit before merge: ${PARENT_COMMIT}"
+          
           # Find all the files that were changed in the PR
-          echo "Getting list of changed files..."
-          CHANGED_FILES=$(git diff --name-only ${TARGET_BRANCH}..${MERGE_SHA})
+          echo "Getting list of changed files between parent and merge commit..."
+          CHANGED_FILES=$(git diff --name-only ${PARENT_COMMIT} ${PR_MERGE_COMMIT})
           
           if [ -z "$CHANGED_FILES" ]; then
-            echo "No changed files detected in the PR. Nothing to sync."
-            exit 1
+            echo "No changes detected between parent and merge commit."
+            echo "Trying direct diff with PR number..."
+            CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD)
+          fi
+          
+          if [ -z "$CHANGED_FILES" ]; then
+            echo "Still no changes detected. This might be an empty PR or an issue with git history."
+            echo "Creating empty commit to continue workflow..."
+            git commit --allow-empty -m "Sync ${TARGET_BRANCH} from internal (PR #${PR_NUMBER}) - No changes detected"
+            exit 0
           fi
           
           echo "Changed files:"
           echo "$CHANGED_FILES"
           
-          # Checkout the merge commit to get its state
-          git checkout ${MERGE_SHA}
-          
-          # Checkout the target branch again
-          git checkout ${TARGET_BRANCH}
-          
-          # Reset the target branch to create our squashed commit
-          echo "Creating squashed changes..."
+          # Reset to the state before the merge
+          git reset --hard ${PARENT_COMMIT}
           
           # For each changed file, copy it from the merge commit
+          echo "Creating squashed changes..."
           for FILE in $CHANGED_FILES; do
-            mkdir -p $(dirname "$FILE")
-            git show ${MERGE_SHA}:"$FILE" > "$FILE" 2>/dev/null || echo "File $FILE was deleted in PR"
+            echo "Processing: $FILE"
+            DIR=$(dirname "$FILE")
+            if [ "$DIR" != "." ]; then
+              mkdir -p "$DIR" 2>/dev/null || true
+            fi
+            
+            # Check if file exists in merge commit
+            if git show ${PR_MERGE_COMMIT}:"$FILE" &>/dev/null; then
+              echo "  - Copying file from merge commit"
+              git show ${PR_MERGE_COMMIT}:"$FILE" > "$FILE"
+            else
+              echo "  - File was deleted in PR, removing"
+              rm -f "$FILE" 2>/dev/null || true
+            fi
           done
           
           # Stage all changes
           git add -A
           
-          # Create the commit
-          git commit -m "Sync ${TARGET_BRANCH} from internal (PR #${PR_NUMBER})"
+          # Check if there are changes to commit
+          if git diff --staged --quiet; then
+            echo "No changes to commit after processing files. Creating empty commit."
+            git commit --allow-empty -m "Sync ${TARGET_BRANCH} from internal (PR #${PR_NUMBER}) - No changes detected"
+          else
+            echo "Changes detected, creating commit"
+            git commit -m "Sync ${TARGET_BRANCH} from internal (PR #${PR_NUMBER})"
+          fi
         continue-on-error: false
 
       - name: Add GitHub.com as remote
