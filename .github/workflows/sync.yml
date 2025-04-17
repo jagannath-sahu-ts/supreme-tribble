@@ -29,7 +29,6 @@ jobs:
       - name: Checkout source repo (internal GHE)
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.base.ref }}
           fetch-depth: 0
 
       - name: Set env variables
@@ -37,6 +36,7 @@ jobs:
           echo "TARGET_BRANCH=${{ github.event.pull_request.base.ref }}" >> $GITHUB_ENV
           echo "PR_NUMBER=${{ github.event.pull_request.number }}" >> $GITHUB_ENV
           echo "TIMESTAMP=$(date +%Y%m%d%H%M%S)" >> $GITHUB_ENV
+          echo "MERGE_SHA=${{ github.event.pull_request.merge_commit_sha }}" >> $GITHUB_ENV
 
       - name: Create squashed commit from merged PR
         run: |
@@ -44,17 +44,46 @@ jobs:
           git config user.email "jagannath.sahu@thoughtspot.com"
           git config url."git@github.com:".insteadOf "https://github.com/"
           
-          echo "Finding merge base..."
-          BASE=$(git merge-base origin/${TARGET_BRANCH} HEAD)
-          echo "Base commit: ${BASE}"
+          # Checkout the target branch first
+          git checkout ${TARGET_BRANCH}
           
-          echo "Resetting to base commit to prepare for squashed commit..."
-          git reset $BASE
+          # Get the merge commit SHA
+          echo "Merge commit SHA: ${MERGE_SHA}"
           
-          echo "Staging all changes..."
-          git add .
+          # Create a temporary branch from the target branch to store our squashed changes
+          git checkout -b temp-sync-branch
           
-          echo "Creating squashed commit..."
+          # Find all the files that were changed in the PR
+          echo "Getting list of changed files..."
+          CHANGED_FILES=$(git diff --name-only ${TARGET_BRANCH}..${MERGE_SHA})
+          
+          if [ -z "$CHANGED_FILES" ]; then
+            echo "No changed files detected in the PR. Nothing to sync."
+            exit 1
+          fi
+          
+          echo "Changed files:"
+          echo "$CHANGED_FILES"
+          
+          # Checkout the merge commit to get its state
+          git checkout ${MERGE_SHA}
+          
+          # Checkout the target branch again
+          git checkout ${TARGET_BRANCH}
+          
+          # Reset the target branch to create our squashed commit
+          echo "Creating squashed changes..."
+          
+          # For each changed file, copy it from the merge commit
+          for FILE in $CHANGED_FILES; do
+            mkdir -p $(dirname "$FILE")
+            git show ${MERGE_SHA}:"$FILE" > "$FILE" 2>/dev/null || echo "File $FILE was deleted in PR"
+          done
+          
+          # Stage all changes
+          git add -A
+          
+          # Create the commit
           git commit -m "Sync ${TARGET_BRANCH} from internal (PR #${PR_NUMBER})"
         continue-on-error: false
 
