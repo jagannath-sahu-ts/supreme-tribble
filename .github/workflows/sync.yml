@@ -13,10 +13,10 @@ jobs:
       GHEC_REPO: git@github.com:thoughtspot/${{ github.event.repository.name }}.git
 
     steps:
-#       - name: Set up Git user
-#         run: |
-#           git config --global user.name "jagannath-sahu-ts"
-#           git config --global user.email "jagannath.sahu@thoughtspot.com"
+      - name: Log sync initiation
+        run: |
+          echo "Initiating sync for PR #${{ github.event.pull_request.number }} to branch ${{ github.event.pull_request.base.ref }}"
+          echo "Repository: ${{ github.event.repository.name }}"
 
       - name: Set up SSH access to GitHub.com
         run: |
@@ -24,52 +24,119 @@ jobs:
           echo "${{ secrets.GHEC_SSH_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan github.com >> ~/.ssh/known_hosts
+        continue-on-error: false
 
       - name: Checkout source repo (internal GHE)
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.base.ref }}
+          fetch-depth: 0
 
       - name: Set env variables
         run: |
           echo "TARGET_BRANCH=${{ github.event.pull_request.base.ref }}" >> $GITHUB_ENV
           echo "PR_NUMBER=${{ github.event.pull_request.number }}" >> $GITHUB_ENV
+          echo "TIMESTAMP=$(date +%Y%m%d%H%M%S)" >> $GITHUB_ENV
 
       - name: Create squashed commit from merged PR
         run: |
           git config user.name "jagannath-sahu-ts"
           git config user.email "jagannath.sahu@thoughtspot.com"
           git config url."git@github.com:".insteadOf "https://github.com/"
+          
+          echo "Finding merge base..."
           BASE=$(git merge-base origin/${TARGET_BRANCH} HEAD)
+          echo "Base commit: ${BASE}"
+          
+          echo "Resetting to base commit to prepare for squashed commit..."
           git reset $BASE
+          
+          echo "Staging all changes..."
           git add .
+          
+          echo "Creating squashed commit..."
           git commit -m "Sync ${TARGET_BRANCH} from internal (PR #${PR_NUMBER})"
+        continue-on-error: false
 
       - name: Add GitHub.com as remote
         run: |
+          echo "Adding GitHub.com as remote 'public'..."
           git remote add public $GHEC_REPO
+          
+          echo "Fetching from public remote..."
           git fetch public ${TARGET_BRANCH} || echo "Target branch does not exist on GitHub.com (will be created)"
+        continue-on-error: false
 
       - name: Check for conflicts on destination
+        id: conflict_check
         run: |
+          echo "Checking for potential conflicts..."
           DEST_HEAD=$(git rev-parse public/${TARGET_BRANCH} 2>/dev/null || echo "none")
+          
           if [ "$DEST_HEAD" != "none" ]; then
+            echo "Destination branch exists. Checking for conflicts..."
             if git merge-base --is-ancestor $DEST_HEAD HEAD; then
-              echo "No conflict. Safe to sync."
+              echo "No conflict detected. Safe to sync."
+              echo "conflict_detected=false" >> $GITHUB_OUTPUT
             else
-              echo "Conflict detected. Aborting sync."
+              echo "WARNING: Conflict detected. Aborting sync to prevent data loss."
+              echo "conflict_detected=true" >> $GITHUB_OUTPUT
               exit 1
             fi
           else
             echo "Destination branch doesn't exist. Will create it."
+            echo "conflict_detected=false" >> $GITHUB_OUTPUT
           fi
+        continue-on-error: false
 
       - name: Backup GitHub.com branch (if exists)
+        if: steps.conflict_check.outputs.conflict_detected == 'false'
         run: |
+          echo "Creating backup of existing branch (if any)..."
           if git show-ref --verify --quiet refs/remotes/public/${TARGET_BRANCH}; then
-            git push public public/${TARGET_BRANCH}:refs/heads/backup-before-sync-${TARGET_BRANCH}-$(date +%Y%m%d%H%M%S)
+            echo "Creating backup branch: backup-before-sync-${TARGET_BRANCH}-${TIMESTAMP}"
+            git push public public/${TARGET_BRANCH}:refs/heads/backup-before-sync-${TARGET_BRANCH}-${TIMESTAMP}
+            echo "Backup created successfully."
+          else
+            echo "No existing branch to backup."
           fi
+        continue-on-error: true
 
       - name: Force push squashed commit to GitHub.com
+        if: steps.conflict_check.outputs.conflict_detected == 'false'
         run: |
-          git push --force public HEAD:${TARGET_BRANCH}
+          echo "Pushing squashed commit to GitHub.com..."
+          if ! git push --force public HEAD:${TARGET_BRANCH}; then
+            echo "::error::Failed to push to public repository"
+            exit 1
+          fi
+          echo "Successfully pushed to ${TARGET_BRANCH} on public repository"
+        continue-on-error: false
+
+      - name: Post sync status
+        if: steps.conflict_check.outputs.conflict_detected == 'false'
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.payload.pull_request.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '✅ Changes from PR #${{ github.event.pull_request.number }} have been successfully synced to the public repository on branch `${{ github.event.pull_request.base.ref }}`'
+            })
+        continue-on-error: true
+
+      - name: Notify if sync failed due to conflicts
+        if: failure() && steps.conflict_check.outputs.conflict_detected == 'true'
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.payload.pull_request.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '❌ Failed to sync changes to the public repository due to potential conflicts. Manual intervention required.'
+            })
+        continue-on-error: true
